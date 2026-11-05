@@ -157,6 +157,48 @@ jobs:
           grep -n "NET_AIROHA" "$CFG"
           echo "✅ NPU 驱动(NET_AIROHA_NPU=y) + PPE 统计(FLOW_STATS=y) 已配置"
 
+      - name: 预置 OpenClash 内核（mihomo）
+        run: |
+          cd ponwrt
+          COREDIR=files/etc/openclash/core
+          mkdir -p "$COREDIR"
+
+          # 取 mihomo 最新 Release（Linux arm64，对应 AN7581 aarch64）
+          API="https://api.github.com/repos/MetaCubeX/mihomo/releases/latest"
+          TAG=$(curl -s --max-time 60 "$API" | grep -oP '"tag_name":\s*"\K[^"]+' | head -1)
+          [ -z "$TAG" ] && TAG="v1.19.33"
+          echo "mihomo 版本: $TAG"
+
+          URL="https://github.com/MetaCubeX/mihomo/releases/download/${TAG}/mihomo-linux-arm64-${TAG}.gz"
+          echo "下载: $URL"
+          ok=0
+          for attempt in 1 2 3; do
+            if curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 --max-time 600 \
+                 -o /tmp/mihomo.gz "$URL" && [ -s /tmp/mihomo.gz ] && gzip -t /tmp/mihomo.gz 2>/dev/null; then
+              ok=1; break
+            fi
+            echo "第 ${attempt} 次下载失败，重试…"; sleep 10
+          done
+          if [ "$ok" != "1" ]; then
+            echo "::warning::${TAG} 下载失败，回退到 v1.19.33"
+            URL="https://github.com/MetaCubeX/mihomo/releases/download/v1.19.33/mihomo-linux-arm64-v1.19.33.gz"
+            curl -fL --retry 5 --retry-delay 10 --connect-timeout 30 --max-time 600 -o /tmp/mihomo.gz "$URL" || true
+          fi
+
+          if [ ! -s /tmp/mihomo.gz ] || ! gzip -t /tmp/mihomo.gz 2>/dev/null; then
+            echo "::error::OpenClash 内核下载失败或文件损坏"
+            exit 1
+          fi
+
+          gunzip -c /tmp/mihomo.gz > "$COREDIR/clash_meta"
+          chmod 0755 "$COREDIR/clash_meta"
+          # 记录版本，供固件内查看
+          echo "$TAG" > "$COREDIR/version.txt"
+
+          echo "----- 内核信息 -----"
+          ls -lh "$COREDIR"
+          file "$COREDIR/clash_meta" || true
+
       - name: 插件命中校验
         run: |
           cd ponwrt
