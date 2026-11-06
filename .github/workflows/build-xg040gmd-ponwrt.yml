@@ -145,23 +145,32 @@ jobs:
           cp "$GITHUB_WORKSPACE/$CONFIG_FILE" .config
 
           # ---------- 锁定设备 ----------
-          # PonWrt 默认开启 TARGET_MULTI_PROFILE，设备符号唯一合法形式：
-          #   CONFIG_TARGET_<board>_<sub>_DEVICE_<设备名>=y
-          # TARGET_PROFILE 是推导结果，不要手写、也不要关 MULTI_PROFILE。
-          awk -v pfx="CONFIG_TARGET_airoha_an7581_DEVICE_" '
+          # TARGET_MULTI_PROFILE=y 时，设备符号是「带 DEVICE_」的形式：
+          #   CONFIG_TARGET_DEVICE_<board>_<sub>_DEVICE_<设备名>=y
+          # 依据 include/image.mk:
+          #   DEVICE_CHECK_PROFILE = $(CONFIG_TARGET_$(if $(CONFIG_TARGET_MULTI_PROFILE),DEVICE_)$(BOARD)_$(SUBTARGET)_$(1))
+          # 而不带 DEVICE_ 的 CONFIG_TARGET_<board>_<sub>_DEVICE_x 在 MULTI_PROFILE=y 下不参与判定，
+          # 写它等于没锁设备（会构建全部设备或直接失败）。
+          PFX="CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_"
+          grep -qx "CONFIG_TARGET_MULTI_PROFILE=y" .config \
+            || { echo "::error::基线 config 的 TARGET_MULTI_PROFILE 不是 y，设备符号形态会变化"; exit 1; }
+
+          awk -v pfx="$PFX" -v keep="$DEVICE_NAME" '
             index($0, pfx) == 1 && substr($0, length($0)-1) == "=y" {
               name = substr($0, length(pfx)+1, length($0)-length(pfx)-2)
-              print "# " pfx name " is not set"
-              next
+              if (name != keep) { print "# " pfx name " is not set"; next }
             }
             { print }
           ' .config > .config.tmp && mv .config.tmp .config
 
-          sed -i "s|^# CONFIG_TARGET_airoha_an7581_DEVICE_${DEVICE_NAME} is not set|CONFIG_TARGET_airoha_an7581_DEVICE_${DEVICE_NAME}=y|" .config
-          grep -qx "CONFIG_TARGET_airoha_an7581_DEVICE_${DEVICE_NAME}=y" .config \
-            || echo "CONFIG_TARGET_airoha_an7581_DEVICE_${DEVICE_NAME}=y" >> .config
+          if ! grep -qx "${PFX}${DEVICE_NAME}=y" .config; then
+            sed -i "s|^# ${PFX}${DEVICE_NAME} is not set|${PFX}${DEVICE_NAME}=y|" .config
+            grep -qx "${PFX}${DEVICE_NAME}=y" .config \
+              || echo "${PFX}${DEVICE_NAME}=y" >> .config
+          fi
 
           sed -i '/^CONFIG_TARGET_PROFILE=/d' .config
+          echo "锁定设备: ${PFX}${DEVICE_NAME}=y"
 
           if [ -n "${{ inputs.extra_packages }}" ]; then
             for p in ${{ inputs.extra_packages }}; do
@@ -173,16 +182,17 @@ jobs:
           make defconfig
 
           echo "----- 设备选择结果 -----"
-          grep -E "^CONFIG_TARGET_PROFILE=|^CONFIG_TARGET_airoha_an7581_.*=y" .config | head -10
+          grep -E "^CONFIG_TARGET_PROFILE=|^CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_.*=y" .config | head -10
 
           # ---------- 机型校验 ----------
-          if grep -qx "CONFIG_TARGET_airoha_an7581_DEVICE_${DEVICE_NAME}=y" .config; then
+          if grep -qx "${PFX}${DEVICE_NAME}=y" .config; then
             ACTUAL_PROFILE=$(grep -oP '^CONFIG_TARGET_PROFILE="\K[^"]+' .config | head -1)
             echo "✅ 机型校验通过: ${DEVICE_NAME} (TARGET_PROFILE=${ACTUAL_PROFILE:-空})"
           else
             echo "::error::设备 ${DEVICE_NAME} 未被选中"
             echo "--- TARGET_PROFILE ---"; grep -E "^CONFIG_TARGET_PROFILE=" .config || echo "(空)"
-            echo "--- 所有 an7581 相关 ---"; grep -i "an7581" .config | head -30 || true
+            echo "--- 所有 an7581 设备开关 ---"
+            grep -E "^CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_" .config | head -30 || true
             exit 1
           fi
 
