@@ -140,20 +140,19 @@ jobs:
         run: |
           cd ponwrt
 
-          # 以「已验证可启动」的全量 .config 为基线，仅覆盖设备符号与插件清单。
-          # 不用增量片段，避免 defconfig 自由推导导致 busybox 等关键配置缺项。
+          # 以「已验证可启动」的配置为基线：保留其 BUSYBOX / KERNEL / SYSTEM 等系统级选项
+          # （这是能正常启动的关键，之前用 65 行增量让 defconfig 自由推导时这些全被丢掉），
+          # 只覆盖设备符号与插件清单。
           cp "$GITHUB_WORKSPACE/$CONFIG_FILE" .config
 
           # ---------- 锁定设备 ----------
-          # TARGET_MULTI_PROFILE=y 时，设备符号是「带 DEVICE_」的形式：
-          #   CONFIG_TARGET_DEVICE_<board>_<sub>_DEVICE_<设备名>=y
-          # 依据 include/image.mk:
+          # 上游未启用 TARGET_MULTI_PROFILE，设备符号是非 DEVICE_ 形式：
+          #   CONFIG_TARGET_<board>_<sub>_DEVICE_<设备名>=y
+          # 参见 include/image.mk:
           #   DEVICE_CHECK_PROFILE = $(CONFIG_TARGET_$(if $(CONFIG_TARGET_MULTI_PROFILE),DEVICE_)$(BOARD)_$(SUBTARGET)_$(1))
-          # 而不带 DEVICE_ 的 CONFIG_TARGET_<board>_<sub>_DEVICE_x 在 MULTI_PROFILE=y 下不参与判定，
-          # 写它等于没锁设备（会构建全部设备或直接失败）。
-          PFX="CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_"
-          grep -qx "CONFIG_TARGET_MULTI_PROFILE=y" .config \
-            || { echo "::error::基线 config 的 TARGET_MULTI_PROFILE 不是 y，设备符号形态会变化"; exit 1; }
+          # 一旦 MULTI_PROFILE 生效，符号会变成 CONFIG_TARGET_DEVICE_<board>_<sub>_DEVICE_x，
+          # 那时这里的赋值会失效，校验会直接报错而不是静默编错设备。
+          PFX="CONFIG_TARGET_airoha_an7581_DEVICE_"
 
           awk -v pfx="$PFX" -v keep="$DEVICE_NAME" '
             index($0, pfx) == 1 && substr($0, length($0)-1) == "=y" {
@@ -164,7 +163,8 @@ jobs:
           ' .config > .config.tmp && mv .config.tmp .config
 
           if ! grep -qx "${PFX}${DEVICE_NAME}=y" .config; then
-            sed -i "s|^# ${PFX}${DEVICE_NAME} is not set|${PFX}${DEVICE_NAME}=y|" .config
+            grep -qx "# ${PFX}${DEVICE_NAME} is not set" .config \
+              && sed -i "s|^# ${PFX}${DEVICE_NAME} is not set|${PFX}${DEVICE_NAME}=y|" .config
             grep -qx "${PFX}${DEVICE_NAME}=y" .config \
               || echo "${PFX}${DEVICE_NAME}=y" >> .config
           fi
@@ -182,7 +182,7 @@ jobs:
           make defconfig
 
           echo "----- 设备选择结果 -----"
-          grep -E "^CONFIG_TARGET_PROFILE=|^CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_.*=y" .config | head -10
+          grep -E "^CONFIG_TARGET_PROFILE=|^CONFIG_TARGET_airoha_an7581_DEVICE_.*=y" .config | head -10
 
           # ---------- 机型校验 ----------
           if grep -qx "${PFX}${DEVICE_NAME}=y" .config; then
@@ -192,7 +192,7 @@ jobs:
             echo "::error::设备 ${DEVICE_NAME} 未被选中"
             echo "--- TARGET_PROFILE ---"; grep -E "^CONFIG_TARGET_PROFILE=" .config || echo "(空)"
             echo "--- 所有 an7581 设备开关 ---"
-            grep -E "^CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_" .config | head -30 || true
+            grep -E "^CONFIG_TARGET_airoha_an7581_DEVICE_" .config | head -30 || true
             exit 1
           fi
 
