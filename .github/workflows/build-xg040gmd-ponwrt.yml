@@ -299,6 +299,31 @@ jobs:
           ls -l files/etc/uci-defaults/
           cat files/etc/uci-defaults/99-xg040gmd-init
 
+          # 移除 Argon 主题顶部的「未设置密码！」红色警告
+          # 判定条件为 root 密码为空（getspnam('root').pwdp === ''），这里直接删掉该模板块，
+          # 保留免密登录体验，同时不再显示提示
+          HUT=$(find . -path '*themes/argon/header.ut' -not -path './build_dir/*' -not -path './staging_dir/*' | head -1)
+          if [ -n "$HUT" ]; then
+            awk '
+              /getuid\(\) == 0/ && /getspnam/ { skip=1; depth=0 }
+              skip {
+                n1 = gsub(/\{%[[:space:]]*if/, "&")
+                n2 = gsub(/\{%[[:space:]]*endif/, "&")
+                depth += n1 - n2
+                if (depth <= 0 && n2 > 0) skip = 0
+                next
+              }
+              { print }
+            ' "$HUT" > "$HUT.tmp" && mv "$HUT.tmp" "$HUT"
+            echo "✅ 已处理模板: $HUT"
+            if grep -q "No password set" "$HUT"; then
+              echo "::error::密码提示未被移除"
+              exit 1
+            fi
+          else
+            echo "::warning::未找到 argon header.ut，跳过"
+          fi
+
       - name: 插件命中校验
         run: |
           cd ponwrt
