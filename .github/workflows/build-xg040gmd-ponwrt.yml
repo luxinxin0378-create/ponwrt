@@ -24,13 +24,10 @@ on:
         type: boolean
         required: false
         default: true
-  push:
-    branches: [master, main]
-    paths:
-      - 'configs/xg040gmd-ponwrt.config'
-      - '.github/workflows/build-xg040gmd-ponwrt.yml'
-      - 'package/**'
-      - 'files/**'
+  # 注意：刻意不配置 push 触发。
+  # 同一仓库里新增/修改配置会触发 push 事件，而 concurrency 的 cancel-in-progress
+  # 会取消正在编译的任务（编译耗时 2~3 小时，代价太高）。
+  # 需要构建时用 workflow_dispatch（或 API dispatch）显式触发。
 
 env:
   PONWRT_REPO: https://github.com/pbs05/ponwrt.git
