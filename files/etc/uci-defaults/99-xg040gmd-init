@@ -1,0 +1,25 @@
+#!/bin/sh
+# 首次启动初始化（uci-defaults）— PonWrt / XG-040G-MD
+
+# ===== 默认主题设为 Argon =====
+uci set luci.main.mediaurlbase='/luci-static/argon' 2>/dev/null
+uci commit luci 2>/dev/null
+
+# ===== 开启 nftables 硬件加速 flowtable offload =====
+uci set firewall.@defaults[0].flow_offloading='1' 2>/dev/null
+uci set firewall.@defaults[0].flow_offloading_hw='1' 2>/dev/null
+uci commit firewall 2>/dev/null
+
+# ===== 挂载 debugfs（PPE 流程表 / NPU 时钟依赖）=====
+if ! grep -q "debugfs" /etc/fstab 2>/dev/null; then
+  echo "debugfs   /sys/kernel/debug   debugfs   noauto,0 0" >> /etc/fstab
+fi
+mount -t debugfs none /sys/kernel/debug 2>/dev/null || true
+
+# ===== 允许 dmesg 读取（SoC Status 面板读取 NPU 固件版本）=====
+if ! grep -q "^kernel.dmesg_restrict" /etc/sysctl.conf 2>/dev/null; then
+  echo "kernel.dmesg_restrict=0" >> /etc/sysctl.conf
+fi
+sysctl -w kernel.dmesg_restrict=0 >/dev/null 2>&1 || true
+
+exit 0
