@@ -22,4 +22,12 @@ if ! grep -q "^kernel.dmesg_restrict" /etc/sysctl.conf 2>/dev/null; then
 fi
 sysctl -w kernel.dmesg_restrict=0 >/dev/null 2>&1 || true
 
+# ===== 预设 root 密码（登录名 root / 密码 root）=====
+# 直接写入 sha512-crypt 哈希，避免 passwd 在非交互环境下失败
+ROOT_HASH='$6$ponwrt2026$.GMJu4Hv0cDlpFmWfp99MQy6yUPeUHOdALXbZFM/L/S/CTss8X1KrJxB3siEBZrO3wd7Rm7vrfTFdDYQHievA1'
+if [ -f /etc/shadow ]; then
+  awk -v h="$ROOT_HASH" 'BEGIN{FS=OFS=":"} $1=="root"{$2=h} {print}' /etc/shadow > /etc/shadow.new && mv /etc/shadow.new /etc/shadow
+  chmod 600 /etc/shadow
+fi
+
 exit 0
