@@ -1,0 +1,461 @@
+name: Build PonWrt XG-040G-MD
+
+# 源码：PonWrt（pbs05/ponwrt，ImmortalWrt 系，内核 6.18）
+# 插件清单与已通过验证的 LEDE 固件完全一致：
+#   OpenClash（预置 mihomo 内核）/ QModem 全功能 / USB 全套驱动 /
+#   NPU+PPE（含 SoC Status 面板）/ CPU 调频 / Argon 主题
+#
+# 触发：
+#   1) 手动（可临时追加插件）
+#   2) 推送 configs/xg040gmd-ponwrt.config 或本工作流
+on:
+  workflow_dispatch:
+    inputs:
+      extra_packages:
+        description: '临时追加插件（空格分隔，如 luci-app-adguardhome）'
+        required: false
+        default: ''
+      jobs:
+        description: '编译并行度，留空用 nproc'
+        required: false
+        default: ''
+      enable_npu_stats:
+        description: '开启 NPU / PPE 流量统计'
+        type: boolean
+        required: false
+        default: true
+  push:
+    branches: [master, main]
+    paths:
+      - 'configs/xg040gmd-ponwrt.config'
+      - '.github/workflows/build-xg040gmd-ponwrt.yml'
+      - 'package/**'
+      - 'files/**'
+
+env:
+  PONWRT_REPO: https://github.com/pbs05/ponwrt.git
+  PONWRT_BRANCH: master
+  CONFIG_FILE: configs/xg040gmd-ponwrt.config
+  DEVICE_NAME: nokia_xg-040g-md-ubi
+  DEVICE_SYMBOL: CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi
+  IMG_PREFIX: XG-040G-MD_PonWrt
+  TZ: Asia/Shanghai
+
+concurrency:
+  group: ponwrt-xg040gmd-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: 编译 PonWrt XG-040G-MD
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    permissions:
+      contents: write
+
+    steps:
+      - name: 检出仓库
+        uses: actions/checkout@v4
+
+      - name: 释放磁盘空间
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/boost /opt/hostedtoolcache/CodeQL \
+                      /usr/local/lib/node_modules /usr/share/swift || true
+          sudo apt-get -qq clean
+          df -h /
+
+      - name: 安装编译依赖
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            ack antlr3 asciidoc autoconf automake autopoint binutils bison \
+            build-essential bzip2 ccache clang cmake cpio curl \
+            device-tree-compiler ecj fastjar flex gawk gettext gcc-multilib \
+            g++-multilib git gnutls-dev gperf haveged help2man intltool \
+            lib32gcc-s1 libc6-dev-i386 libelf-dev libglib2.0-dev libgmp3-dev \
+            libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libpython3-dev \
+            libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm \
+            lrzsz mkisofs msmtp nano ninja-build p7zip p7zip-full patch \
+            pkgconf python3 python3-pip python3-ply python3-docutils \
+            python3-pyelftools qemu-utils re2c rsync scons squashfs-tools \
+            subversion swig texinfo uglifyjs upx-ucl unzip vim wget xmlto xxd \
+            zlib1g-dev zstd
+
+      - name: 拉取 PonWrt 最新源码
+        run: |
+          git clone --depth 1 --branch "$PONWRT_BRANCH" "$PONWRT_REPO" ponwrt
+          cd ponwrt
+          echo "PONWRT_SHA=$(git rev-parse HEAD)"              >> "$GITHUB_ENV"
+          echo "PONWRT_SHORT=$(git rev-parse --short HEAD)"    >> "$GITHUB_ENV"
+          echo "PONWRT_DATE=$(git log -1 --format=%cd --date=format:'%Y-%m-%d %H:%M')" >> "$GITHUB_ENV"
+          echo "上游提交: $(git rev-parse --short HEAD) $(git log -1 --format=%s)"
+
+      - name: 注入自定义包（NPU 状态面板）
+        run: |
+          # PonWrt 走 ImmortalWrt 的 luci feed，没有 luci-app-airoha-npu，
+          # 这里把移植版包放到 package/ 下参与编译（Makefile 已指向 feeds/luci/luci.mk）
+          cp -rv "$GITHUB_WORKSPACE/package/luci-app-airoha-npu" ponwrt/package/
+          chmod +x ponwrt/package/luci-app-airoha-npu/root/usr/libexec/rpcd/luci.airoha_npu
+          echo "----- 包文件 -----"
+          find ponwrt/package/luci-app-airoha-npu -type f | sort
+
+      - name: 挂载第三方 feeds
+        run: |
+          cd ponwrt
+          add_feed() {
+            # 只把"未注释"的行视为已存在，避免上游注释行导致 feed 实际未挂载
+            if grep -Eq "^[[:space:]]*src-git $1 " feeds.conf.default; then
+              echo "feed $1 已存在（激活状态）"
+            else
+              sed -i "/^[[:space:]]*#*[[:space:]]*src-git $1 /d" feeds.conf.default
+              echo "src-git $1 $2" >> feeds.conf.default
+              echo "feed $1 已追加: $2"
+            fi
+          }
+          add_feed qmodem https://github.com/FUjr/QModem.git
+          add_feed openclash https://github.com/vernesong/OpenClash.git
+          echo "----- feeds.conf.default -----"
+          cat feeds.conf.default
+
+      - name: 更新并安装 feeds（强制拉最新）
+        run: |
+          cd ponwrt
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          echo "----- feed 关键包确认 -----"
+          ls feeds/qmodem/luci-app-qmodem-next >/dev/null 2>&1 && echo "qmodem feed OK" || echo "::warning::qmodem feed 未就绪"
+          ls feeds/openclash/luci-app-openclash >/dev/null 2>&1 && echo "openclash feed OK" || echo "::warning::openclash feed 未就绪"
+          ls feeds/luci/luci.mk >/dev/null 2>&1 && echo "luci.mk OK" || { echo "::error::缺少 feeds/luci/luci.mk，NPU 面板无法编译"; exit 1; }
+
+      - name: 缓存 dl 源码包
+        uses: actions/cache@v4
+        with:
+          path: ponwrt/dl
+          key: dl-ponwrt-xg040gmd-${{ github.run_id }}
+          restore-keys: |
+            dl-ponwrt-xg040gmd-
+            dl-ponwrt-
+
+      - name: 应用配置
+        run: |
+          cd ponwrt
+
+          # ---------- 第一步：只写 target/subtarget，建立基础骨架 ----------
+          : > .config
+          cat >> .config <<'EOF'
+          CONFIG_TARGET_airoha=y
+          CONFIG_TARGET_airoha_an7581=y
+          EOF
+
+          make defconfig
+
+          echo "----- 第一轮：target 是否命中 -----"
+          grep -E "^CONFIG_TARGET_(airoha|airoha_an7581|ARCH|BOARD|SUBTARGET)" .config | head -10
+          if ! grep -q "^CONFIG_TARGET_airoha_an7581=y" .config; then
+            echo "::error::target airoha_an7581 未被选中"
+            grep -i "airoha" .config | head -20 || true
+            exit 1
+          fi
+
+          # ---------- 第二步：锁定设备 ----------
+          # PonWrt 默认开启 TARGET_MULTI_PROFILE，设备符号唯一合法形式：
+          #   CONFIG_TARGET_<board>_<sub>_DEVICE_<设备名>=y
+          # TARGET_PROFILE 是推导结果，不要手写、也不要关 MULTI_PROFILE。
+          echo "----- 第一轮默认设备行 -----"
+          grep -E "^CONFIG_TARGET_airoha_an7581_DEVICE_.*=y" .config | head -5 || true
+
+          awk -v pfx="CONFIG_TARGET_airoha_an7581_DEVICE_" '
+            index($0, pfx) == 1 && substr($0, length($0)-1) == "=y" {
+              name = substr($0, length(pfx)+1, length($0)-length(pfx)-2)
+              print "# " pfx name " is not set"
+              next
+            }
+            { print }
+          ' .config > .config.tmp && mv .config.tmp .config
+
+          sed -i "s|^# CONFIG_TARGET_airoha_an7581_DEVICE_${DEVICE_NAME} is not set|CONFIG_TARGET_airoha_an7581_DEVICE_${DEVICE_NAME}=y|" .config
+          grep -qx "CONFIG_TARGET_airoha_an7581_DEVICE_${DEVICE_NAME}=y" .config \
+            || echo "CONFIG_TARGET_airoha_an7581_DEVICE_${DEVICE_NAME}=y" >> .config
+
+          sed -i '/^CONFIG_TARGET_PROFILE=/d' .config
+
+          echo "----- 改写后设备行 -----"
+          grep -E "^CONFIG_TARGET_airoha_an7581_DEVICE_.*=y" .config | head -5 || true
+
+          # ---------- 第三步：追加插件清单并重建 ----------
+          grep -vE '^CONFIG_TARGET_(DEVICE|PROFILE|ALL_PROFILES|MULTI_PROFILE)' \
+            "$GITHUB_WORKSPACE/$CONFIG_FILE" >> .config
+
+          if [ -n "${{ inputs.extra_packages }}" ]; then
+            for p in ${{ inputs.extra_packages }}; do
+              echo "CONFIG_PACKAGE_${p}=y" >> .config
+              echo "追加插件: $p"
+            done
+          fi
+
+          make defconfig
+
+          echo "----- 设备选择结果 -----"
+          grep -E "^CONFIG_TARGET_PROFILE=|^CONFIG_TARGET_airoha_an7581_.*=y" .config | head -10
+
+          # ---------- 校验 ----------
+          if grep -qx "CONFIG_TARGET_airoha_an7581_DEVICE_${DEVICE_NAME}=y" .config; then
+            ACTUAL_PROFILE=$(grep -oP '^CONFIG_TARGET_PROFILE="\K[^"]+' .config | head -1)
+            echo "✅ 机型校验通过: ${DEVICE_NAME} (TARGET_PROFILE=${ACTUAL_PROFILE:-空})"
+          else
+            echo "::error::设备 ${DEVICE_NAME} 未被选中"
+            echo "--- TARGET_PROFILE ---"; grep -E "^CONFIG_TARGET_PROFILE=" .config || echo "(空)"
+            echo "--- 所有 an7581 相关 ---"; grep -i "an7581" .config | head -30 || true
+            exit 1
+          fi
+
+      - name: 开启 NPU / PPE 流量统计
+        # push 触发时 inputs.* 为 null，null != false 在 GH 表达式中为假会跳过本步骤，
+        # 因此非手动触发一律执行。
+        if: ${{ inputs.enable_npu_stats != false || github.event_name != 'workflow_dispatch' }}
+        run: |
+          cd ponwrt
+          CFG=$(ls target/linux/airoha/an7581/config-* 2>/dev/null | head -1)
+          if [ -z "$CFG" ]; then
+            echo "::error::未找到 airoha/an7581 内核配置"
+            exit 1
+          fi
+          echo "目标内核配置: $CFG"
+
+          set_kopt() {
+            k="$1"; v="$2"
+            if grep -q "^# ${k} is not set" "$CFG"; then
+              sed -i "s|^# ${k} is not set|${k}=${v}|" "$CFG"
+            elif grep -q "^${k}=" "$CFG"; then
+              sed -i "s|^${k}=.*|${k}=${v}|" "$CFG"
+            else
+              echo "${k}=${v}" >> "$CFG"
+            fi
+          }
+
+          set_kopt CONFIG_NET_AIROHA_NPU y
+          # PonWrt 默认关闭 FLOW_STATS（PPE 统计），必须打开
+          set_kopt CONFIG_NET_AIROHA_FLOW_STATS y
+          set_kopt CONFIG_ARM_AIROHA_SOC_CPUFREQ y
+
+          echo "----- 修改后的 AIROHA 相关选项 -----"
+          grep -i "NET_AIROHA\|AIROHA_SOC_CPUFREQ" "$CFG"
+
+          for k in CONFIG_NET_AIROHA_NPU CONFIG_NET_AIROHA_FLOW_STATS CONFIG_ARM_AIROHA_SOC_CPUFREQ; do
+            if ! grep -qx "${k}=y" "$CFG"; then
+              echo "::error::${k} 未能开启"
+              exit 1
+            fi
+          done
+          echo "✅ NPU 驱动 + PPE 统计 + CPUFREQ 内核选项均已确认 =y"
+
+      - name: 预置 OpenClash 内核（mihomo）
+        run: |
+          cd ponwrt
+          COREDIR=files/etc/openclash/core
+          mkdir -p "$COREDIR"
+
+          TAG=$(curl -s --max-time 60 "https://api.github.com/repos/MetaCubeX/mihomo/releases/latest" \
+                | grep -oP '"tag_name":\s*"\K[^"]+' | head -1)
+          [ -z "$TAG" ] && TAG="v1.19.33"
+          echo "mihomo 版本: $TAG"
+
+          URL="https://github.com/MetaCubeX/mihomo/releases/download/${TAG}/mihomo-linux-arm64-${TAG}.gz"
+          echo "下载: $URL"
+          ok=0
+          for attempt in 1 2 3; do
+            if curl -fL --retry 3 --retry-delay 5 --connect-timeout 30 --max-time 600 \
+                 -o /tmp/mihomo.gz "$URL" && [ -s /tmp/mihomo.gz ] && gzip -t /tmp/mihomo.gz 2>/dev/null; then
+              ok=1; break
+            fi
+            echo "第 ${attempt} 次下载失败，重试…"; sleep 10
+          done
+          if [ "$ok" != "1" ]; then
+            echo "::warning::${TAG} 下载失败，回退 v1.19.33"
+            curl -fL --retry 5 --retry-delay 10 --connect-timeout 30 --max-time 600 \
+              -o /tmp/mihomo.gz "https://github.com/MetaCubeX/mihomo/releases/download/v1.19.33/mihomo-linux-arm64-v1.19.33.gz" || true
+          fi
+
+          if [ ! -s /tmp/mihomo.gz ] || ! gzip -t /tmp/mihomo.gz 2>/dev/null; then
+            echo "::error::OpenClash 内核下载失败或文件损坏"
+            exit 1
+          fi
+
+          gunzip -c /tmp/mihomo.gz > "$COREDIR/clash_meta"
+          chmod 0755 "$COREDIR/clash_meta"
+          echo "$TAG" > "$COREDIR/version.txt"
+
+          echo "----- 内核信息 -----"
+          ls -lh "$COREDIR"
+          file "$COREDIR/clash_meta" || true
+
+      - name: 注入默认配置（Argon 主题 / flow offload / debugfs）
+        run: |
+          cd ponwrt
+          mkdir -p files
+          cp -rv "$GITHUB_WORKSPACE/files/." files/
+          chmod +x files/etc/uci-defaults/*
+          echo "----- uci-defaults -----"
+          ls -l files/etc/uci-defaults/
+          cat files/etc/uci-defaults/99-xg040gmd-init
+
+      - name: 插件命中校验
+        run: |
+          cd ponwrt
+          miss=0; total=0; missed=""
+          while read -r p; do
+            total=$((total+1))
+            if grep -q "^CONFIG_PACKAGE_$p=y" .config; then
+              echo "  OK   $p"
+            else
+              echo "  MISS $p"; miss=$((miss+1)); missed="$missed $p"
+            fi
+          done < <(grep -oP '^CONFIG_PACKAGE_\K[\w.+-]+(?==y)' "$GITHUB_WORKSPACE/$CONFIG_FILE")
+          echo "::notice::插件共 ${total} 个，未命中 ${miss} 个：${missed:-无}"
+          echo "未命中项通常为该源无此包名，最终以产物校验为准"
+
+      - name: 下载依赖源码
+        run: |
+          cd ponwrt
+          J="${{ inputs.jobs }}"; [ -z "$J" ] && J=$(nproc)
+          make download -j"$J" || make download -j1 V=s
+
+      - name: 编译固件
+        run: |
+          cd ponwrt
+          J="${{ inputs.jobs }}"; [ -z "$J" ] && J=$(nproc)
+          echo "并行度: $J"
+          if ! make -j"$J" V=s > build.log 2>&1; then
+            echo "::error::编译失败，日志最后 200 行："
+            tail -n 200 build.log
+            exit 1
+          fi
+          tail -n 30 build.log
+
+      - name: 产物功能校验（NPU / PPE / Argon / QModem）
+        run: |
+          cd ponwrt
+          echo "===== 1) 内核配置校验 ====="
+          CFG=$(ls target/linux/airoha/an7581/config-* | head -1)
+          grep -E "^CONFIG_NET_AIROHA_(NPU|FLOW_STATS)=y|^CONFIG_ARM_AIROHA_SOC_CPUFREQ=y" "$CFG" || {
+            echo "::error::内核配置里 NPU/PPE/CPUFREQ 未全部开启"; exit 1; }
+
+          echo "===== 2) .config 关键包校验 ====="
+          for p in luci-app-airoha-npu luci-app-cpufreq luci-theme-argon \
+                   luci-app-openclash luci-app-qmodem-next luci-app-qmodem-monitor \
+                   qmodem-smsd sms-forwarder-next libqmodem-sms \
+                   luci-app-qmodem-ttlfw4 luci-app-mwan3 kmod-nft-offload; do
+            if grep -q "^CONFIG_PACKAGE_${p}=y" .config; then
+              echo "  OK   $p"
+            else
+              echo "::error::  MISS $p"
+              exit 1
+            fi
+          done
+
+          echo "===== 2b) QModem 互斥检查 ====="
+          if grep -q "^CONFIG_PACKAGE_luci-app-qmodem=y" .config; then
+            echo "::error::luci-app-qmodem 与 -next 冲突，旧版被选中"
+            exit 1
+          fi
+          echo "  OK   旧版 luci-app-qmodem 已关闭（使用 -next）"
+
+          echo "===== 3) 固件内文件校验 ====="
+          ROOTFS=$(ls bin/targets/airoha/an7581/*rootfs*.bin 2>/dev/null | head -1)
+          echo "rootfs: $ROOTFS"
+          if [ -n "$ROOTFS" ] && command -v unsquashfs >/dev/null 2>&1; then
+            unsquashfs -l "$ROOTFS" 2>/dev/null > /tmp/fslist.txt || true
+            for f in \
+              "etc/uci-defaults/99-xg040gmd-init" \
+              "usr/libexec/rpcd/luci.airoha_npu" \
+              "usr/share/luci/menu.d/luci-app-airoha-npu.json" \
+              "www/luci-static/resources/view/airoha_npu/status.js" \
+              "etc/openclash/core/clash_meta"; do
+              if grep -q "$f" /tmp/fslist.txt 2>/dev/null; then
+                echo "  OK   /$f"
+              else
+                echo "  WARN /$f 未找到（路径可能因版本而异）"
+              fi
+            done
+          else
+            echo "unsquashfs 不可用或未找到 rootfs，跳过文件级校验"
+          fi
+
+      - name: 整理产物并按规则重命名
+        run: |
+          cd ponwrt
+          OUT="$GITHUB_WORKSPACE/out"; mkdir -p "$OUT"
+          DATE=$(date +%Y%m%d)
+          BUILDNO="${{ github.run_number }}"
+
+          echo "命名前缀: ${IMG_PREFIX}_${DATE}_b${BUILDNO}"
+
+          for f in bin/targets/airoha/an7581/*xg-040g-md*; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f")
+            case "$base" in
+              *sha256sums*|*.buildinfo)          continue ;;
+              *initramfs*recovery*.itb)          kind="recovery.itb" ;;
+              *sysupgrade*.itb)                  kind="sysupgrade.itb" ;;
+              *rootfs*.bin)                      kind="rootfs.bin" ;;
+              *.bin)                             kind="factory.bin" ;;
+              *.img.gz)                          kind="sysupgrade.img.gz" ;;
+              *.manifest)                        kind="manifest" ;;
+              *)                                 kind="${base##*.}" ;;
+            esac
+            NEW="${IMG_PREFIX}_${DATE}_b${BUILDNO}_${kind}"
+            if [ -e "$OUT/$NEW" ]; then
+              echo "::error::产物命名冲突: $NEW（上一文件会被覆盖），中止"
+              exit 1
+            fi
+            cp -v "$f" "$OUT/$NEW"
+            echo "  重命名: $base -> $NEW"
+          done
+
+          if ! ls "$OUT" 2>/dev/null | grep -q "${IMG_PREFIX}"; then
+            echo "::error::未生成 xg-040g-md 镜像，编译产物如下："
+            ls -l bin/targets/airoha/an7581/ || true
+            exit 1
+          fi
+
+          cd "$OUT"
+          sha256sum * > SHA256SUMS.txt 2>/dev/null || true
+          cp "$GITHUB_WORKSPACE"/ponwrt/.config config-used.txt 2>/dev/null || true
+          echo "----- 最终产物 -----"; ls -lh
+
+      - name: 上传 Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.IMG_PREFIX }}_${{ github.run_number }}
+          path: out/*
+          retention-days: 30
+          if-no-files-found: error
+
+      - name: 发布 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.IMG_PREFIX }}_b${{ github.run_number }}
+          name: ${{ env.IMG_PREFIX }} b${{ github.run_number }} (${{ env.PONWRT_SHORT }})
+          body: |
+            **Nokia XG-040G-MD** (Airoha AN7581DT) — PonWrt 固件
+
+            - PonWrt 上游提交: `${{ env.PONWRT_SHORT }}` (${{ env.PONWRT_DATE }})
+            - 插件：OpenClash（预置 mihomo 内核）/ QModem 全功能 / USB 全套驱动 / NPU+PPE / CPU 调频 / Argon 主题
+            - NPU：`CONFIG_NET_AIROHA_NPU=y`；PPE 统计：`CONFIG_NET_AIROHA_FLOW_STATS=y`
+            - SoC Status 面板：`luci-app-airoha-npu`（NPU / PPE 流程表 / CPU 频率与超频）
+            - 所有插件取自各 feed 最新 master
+
+            ⚠️ 刷机前请备份 `bosa`、`ri` 原厂分区。
+          files: out/*
+          fail_on_unmatched_files: true
+
+      - name: 失败时上传日志
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ github.run_number }}
+          path: ponwrt/build.log
+          retention-days: 7
