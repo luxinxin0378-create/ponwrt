@@ -140,30 +140,14 @@ jobs:
         run: |
           cd ponwrt
 
-          # ---------- 第一步：只写 target/subtarget，建立基础骨架 ----------
-          : > .config
-          cat >> .config <<'EOF'
-          CONFIG_TARGET_airoha=y
-          CONFIG_TARGET_airoha_an7581=y
-          EOF
+          # 以「已验证可启动」的全量 .config 为基线，仅覆盖设备符号与插件清单。
+          # 不用增量片段，避免 defconfig 自由推导导致 busybox 等关键配置缺项。
+          cp "$GITHUB_WORKSPACE/$CONFIG_FILE" .config
 
-          make defconfig
-
-          echo "----- 第一轮：target 是否命中 -----"
-          grep -E "^CONFIG_TARGET_(airoha|airoha_an7581|ARCH|BOARD|SUBTARGET)" .config | head -10
-          if ! grep -q "^CONFIG_TARGET_airoha_an7581=y" .config; then
-            echo "::error::target airoha_an7581 未被选中"
-            grep -i "airoha" .config | head -20 || true
-            exit 1
-          fi
-
-          # ---------- 第二步：锁定设备 ----------
+          # ---------- 锁定设备 ----------
           # PonWrt 默认开启 TARGET_MULTI_PROFILE，设备符号唯一合法形式：
           #   CONFIG_TARGET_<board>_<sub>_DEVICE_<设备名>=y
           # TARGET_PROFILE 是推导结果，不要手写、也不要关 MULTI_PROFILE。
-          echo "----- 第一轮默认设备行 -----"
-          grep -E "^CONFIG_TARGET_airoha_an7581_DEVICE_.*=y" .config | head -5 || true
-
           awk -v pfx="CONFIG_TARGET_airoha_an7581_DEVICE_" '
             index($0, pfx) == 1 && substr($0, length($0)-1) == "=y" {
               name = substr($0, length(pfx)+1, length($0)-length(pfx)-2)
@@ -179,13 +163,6 @@ jobs:
 
           sed -i '/^CONFIG_TARGET_PROFILE=/d' .config
 
-          echo "----- 改写后设备行 -----"
-          grep -E "^CONFIG_TARGET_airoha_an7581_DEVICE_.*=y" .config | head -5 || true
-
-          # ---------- 第三步：追加插件清单并重建 ----------
-          grep -vE '^CONFIG_TARGET_(DEVICE|PROFILE|ALL_PROFILES|MULTI_PROFILE)' \
-            "$GITHUB_WORKSPACE/$CONFIG_FILE" >> .config
-
           if [ -n "${{ inputs.extra_packages }}" ]; then
             for p in ${{ inputs.extra_packages }}; do
               echo "CONFIG_PACKAGE_${p}=y" >> .config
@@ -198,7 +175,7 @@ jobs:
           echo "----- 设备选择结果 -----"
           grep -E "^CONFIG_TARGET_PROFILE=|^CONFIG_TARGET_airoha_an7581_.*=y" .config | head -10
 
-          # ---------- 校验 ----------
+          # ---------- 机型校验 ----------
           if grep -qx "CONFIG_TARGET_airoha_an7581_DEVICE_${DEVICE_NAME}=y" .config; then
             ACTUAL_PROFILE=$(grep -oP '^CONFIG_TARGET_PROFILE="\K[^"]+' .config | head -1)
             echo "✅ 机型校验通过: ${DEVICE_NAME} (TARGET_PROFILE=${ACTUAL_PROFILE:-空})"
@@ -208,6 +185,18 @@ jobs:
             echo "--- 所有 an7581 相关 ---"; grep -i "an7581" .config | head -30 || true
             exit 1
           fi
+
+          # ---------- 启动关键项校验 ----------
+          # BUSYBOX_CUSTOM=y 时真正生效的是 CONFIG_BUSYBOX_CONFIG_*，缺 applet（init/sh/mount）
+          # 会导致内核找不到 init 直接掉进 recovery，因此这里强校验。
+          N=$(grep -c "^CONFIG_BUSYBOX_CONFIG_" .config || true)
+          echo "CONFIG_BUSYBOX_CONFIG_* 共 ${N} 项"
+          for k in CONFIG_BUSYBOX_CONFIG_ASH CONFIG_BUSYBOX_CONFIG_MOUNT \
+                   CONFIG_BUSYBOX_CONFIG_DEVMEM; do
+            grep -qx "${k}=y" .config && echo "  OK   ${k}" || { echo "::error::缺少 ${k}"; exit 1; }
+          done
+          [ "${N:-0}" -ge 200 ] || { echo "::error::busybox applet 配置仅 ${N} 项，明显缺失，固件会起不来"; exit 1; }
+          echo "✅ busybox 配置完整"
 
       - name: 开启 NPU / PPE 流量统计
         # push 触发时 inputs.* 为 null，null != false 在 GH 表达式中为假会跳过本步骤，
