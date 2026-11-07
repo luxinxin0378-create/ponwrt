@@ -1,0 +1,35 @@
+#!/bin/sh
+# 温度信息输出 — 供 rpcd 的 luci.getTempInfo 调用（概览页 Temperature 行）
+#
+# ImmortalWrt 的 LuCI 通过执行 /sbin/tempinfo 获取温度，脚本不存在时
+# getTempInfo 直接返回错误，概览页温度行永远不显示。
+# PonWrt 源里没有 autocore 包（该脚本的上游来源），这里随固件 overlay 注入。
+#
+# 逻辑：遍历所有 thermal zone，取第一个有效值；若存在 type 标记为
+# cpu/soc/core 的 zone 则优先采用并停止。无任何数据时输出为空，
+# LuCI 端会自动隐藏温度行（保持原有行为）。
+
+THERMAL_PATH="/sys/class/thermal"
+
+cpu_temp=""
+for zone in "$THERMAL_PATH"/thermal_zone*; do
+	[ -r "$zone/temp" ] || continue
+	t=$(cat "$zone/temp" 2>/dev/null)
+	case "$t" in ''|*[!0-9]*) continue ;; esac
+	[ "$t" -gt 0 ] 2>/dev/null || continue
+	cpu_temp=$(awk -v t="$t" 'BEGIN{printf("%.1f°C", t / 1000)}')
+	type=$(cat "$zone/type" 2>/dev/null)
+	case "$type" in
+		*cpu*|*soc*|*core*) break ;;
+	esac
+done
+
+wifi_temp="$(awk '{printf("%.1f°C ", $0 / 1000)}' /sys/class/ieee80211/phy*/hwmon*/temp1_input 2>/dev/null | awk '$1=$1')"
+
+if [ -n "$cpu_temp" ] && [ -z "$wifi_temp" ]; then
+	echo -n "CPU: $cpu_temp"
+elif [ -z "$cpu_temp" ] && [ -n "$wifi_temp" ]; then
+	echo -n "WiFi: $wifi_temp"
+elif [ -n "$cpu_temp" ] && [ -n "$wifi_temp" ]; then
+	echo -n "CPU: $cpu_temp, WiFi: $wifi_temp"
+fi

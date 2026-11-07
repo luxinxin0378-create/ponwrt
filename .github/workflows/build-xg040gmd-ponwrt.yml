@@ -246,9 +246,11 @@ jobs:
           # PonWrt 默认关闭 FLOW_STATS（PPE 统计），必须打开
           set_kopt CONFIG_NET_AIROHA_FLOW_STATS y
           set_kopt CONFIG_ARM_AIROHA_SOC_CPUFREQ y
+          # 概览页温度行依赖 thermal zone（AIROHA_THERMAL 默认开，这里显式确认）
+          set_kopt CONFIG_AIROHA_THERMAL y
 
           echo "----- 修改后的 AIROHA 相关选项 -----"
-          grep -i "NET_AIROHA\|AIROHA_SOC_CPUFREQ" "$CFG"
+          grep -i "NET_AIROHA\|AIROHA_SOC_CPUFREQ\|AIROHA_THERMAL" "$CFG"
 
           for k in CONFIG_NET_AIROHA_NPU CONFIG_NET_AIROHA_FLOW_STATS CONFIG_ARM_AIROHA_SOC_CPUFREQ; do
             if ! grep -qx "${k}=y" "$CFG"; then
@@ -304,9 +306,12 @@ jobs:
           mkdir -p files
           cp -rv "$GITHUB_WORKSPACE/files/." files/
           chmod +x files/etc/uci-defaults/*
+          chmod +x files/sbin/tempinfo
           echo "----- uci-defaults -----"
           ls -l files/etc/uci-defaults/
           cat files/etc/uci-defaults/99-xg040gmd-init
+          echo "----- tempinfo -----"
+          ls -l files/sbin/tempinfo
 
           # 移除 Argon 主题顶部的「未设置密码！」红色警告
           # 判定条件为 root 密码为空（getspnam('root').pwdp === ''），这里直接删掉该模板块，
@@ -406,6 +411,7 @@ jobs:
               "usr/share/luci/menu.d/luci-app-airoha-npu.json" \
               "www/luci-static/resources/view/airoha_npu/status.js" \
               "etc/openclash/core/clash_meta" \
+              "sbin/tempinfo" \
               "www/luci-static/peditx/manifest.json" \
               "usr/lib/lua/luci/view/themes/peditx/header.htm"; do
               if grep -q "$f" /tmp/fslist.txt 2>/dev/null; then
@@ -482,7 +488,7 @@ jobs:
             - 如需切回 Argon：`uci set luci.main.mediaurlbase='/luci-static/argon'; uci commit luci`
             - NPU：`CONFIG_NET_AIROHA_NPU=y`；PPE 统计：`CONFIG_NET_AIROHA_FLOW_STATS=y`
             - SoC Status 面板：`luci-app-airoha-npu`（NPU / PPE 流程表 / CPU 频率与超频）
-            - 概览页新增处理器频率显示；所有插件取自各 feed 最新 master
+            - 概览页新增处理器频率 + CPU 温度显示；所有插件取自各 feed 最新 master
 
             ⚠️ 刷机前请备份 `bosa`、`ri` 原厂分区。
           files: out/*
