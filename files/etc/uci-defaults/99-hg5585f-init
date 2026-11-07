@@ -30,11 +30,4 @@ if [ -f /etc/shadow ]; then
   chmod 600 /etc/shadow
 fi
 
-# ===== USB 网卡（RNDIS/ECM/NCM）自动 DHCP 兜底 =====
-# QModem 的模块白名单未收录 NL668 等型号，RNDIS/ECM 下不会自动建接口，
-# 这里启用独立服务，按内核驱动类型识别网卡并自动创建 DHCP 接口。
-if [ -x /usr/sbin/usb-wan-dhcp ]; then
-  /etc/init.d/usbwan enable 2>/dev/null || true
-fi
-
 exit 0
