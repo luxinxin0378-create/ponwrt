@@ -3,7 +3,7 @@ name: Build PonWrt XG-040G-MD
 # 源码：PonWrt（pbs05/ponwrt，ImmortalWrt 系，内核 6.18）
 # 插件清单与已通过验证的 LEDE 固件完全一致：
 #   OpenClash（预置 mihomo 内核）/ QModem 全功能 / USB 全套驱动 /
-#   NPU+PPE（含 SoC Status 面板）/ CPU 调频 / Argon 主题
+#   NPU+PPE（含 SoC Status 面板）/ CPU 调频 / PeDitX 主题（Argon 后备）
 #
 # 触发：
 #   1) 手动（可临时追加插件）
@@ -32,6 +32,10 @@ on:
 env:
   PONWRT_REPO: https://github.com/pbs05/ponwrt.git
   PONWRT_BRANCH: master
+  # pon_userspace 换成本仓库：在上游 airoha-pond 0.3.0 / airoha-ponctl 0.2.0
+  # （版本、源码与 pbs05 上游完全一致）基础上，增加 luci-app-onu 顶级七页菜单
+  # 与 luci-app-pon-status 概览卡片。
+  PON_CFG_REPO: https://github.com/naoki66/OpenWrt_ONU_CONFIG.git
   CONFIG_FILE: configs/xg040gmd-ponwrt.config
   DEVICE_NAME: nokia_xg-040g-md-ubi
   DEVICE_SYMBOL: CONFIG_TARGET_DEVICE_airoha_an7581_DEVICE_nokia_xg-040g-md-ubi
@@ -90,7 +94,7 @@ jobs:
           echo "PONWRT_DATE=$(git log -1 --format=%cd --date=format:'%Y-%m-%d %H:%M')" >> "$GITHUB_ENV"
           echo "上游提交: $(git rev-parse --short HEAD) $(git log -1 --format=%s)"
 
-      - name: 注入自定义包（NPU 状态面板）
+      - name: 注入自定义包（NPU 状态面板 + PeDitX 主题）
         run: |
           # PonWrt 走 ImmortalWrt 的 luci feed，没有 luci-app-airoha-npu，
           # 这里把移植版包放到 package/ 下参与编译（Makefile 已指向 feeds/luci/luci.mk）
@@ -99,6 +103,15 @@ jobs:
           echo "----- 包文件 -----"
           find ponwrt/package/luci-app-airoha-npu -type f | sort
 
+          # PeDitX 主题（peditx/luci-theme-peditx）：独立 Makefile（package.mk），
+          # 放进 package/ 即可编译；截图目录约 15MB 与产物无关，删掉省磁盘。
+          git clone --depth 1 https://github.com/peditx/luci-theme-peditx.git \
+            ponwrt/package/luci-theme-peditx
+          rm -rf ponwrt/package/luci-theme-peditx/screenshots
+          echo "----- PeDitX 主题 -----"
+          ls ponwrt/package/luci-theme-peditx
+          test -f ponwrt/package/luci-theme-peditx/Makefile \
+            || { echo "::error::PeDitX 主题拉取失败"; exit 1; }
 
       - name: 挂载第三方 feeds
         run: |
@@ -115,18 +128,81 @@ jobs:
           }
           add_feed qmodem https://github.com/FUjr/QModem.git
           add_feed openclash https://github.com/vernesong/OpenClash.git
+
+          # ---------- 替换 pon_userspace ----------
+          # 上游 src-git pon_userspace 指向 pbs05/openwrt-pon-userspace，
+          # 只含 airoha-pond / airoha-ponctl 两个命令行包，没有配置界面。
+          # 换成 naoki66/OpenWrt_ONU_CONFIG：同版本同源码的 pond/ponctl，
+          # 外加 luci-app-onu（七页）与 luci-app-pon-status（概览卡片）。
+          # 必须删除旧行再追加——add_feed 判定“已存在”会直接跳过，不会改名。
+          sed -i '/^[[:space:]]*#*[[:space:]]*src-git pon_userspace /d' feeds.conf.default
+          add_feed pon_userspace "$PON_CFG_REPO"
+
           echo "----- feeds.conf.default -----"
           cat feeds.conf.default
 
-      - name: 更新并安装 feeds（强制拉最新）
+      - name: 更新 feeds
         run: |
           cd ponwrt
           ./scripts/feeds update -a
+          echo "----- pon_userspace 内容 -----"
+          ls feeds/pon_userspace/ || { echo "::error::pon_userspace feed 拉取失败"; exit 1; }
+          for d in airoha-pon-daemons airoha-ponctl luci-app-onu luci-app-pon-status; do
+            [ -d "feeds/pon_userspace/$d" ] \
+              && echo "  OK   $d" \
+              || { echo "::error::pon_userspace 缺少 $d"; exit 1; }
+          done
+
+      - name: 修补 ONU 相关包（omcproxy 依赖 / firewall4 补丁）
+        run: |
+          cd ponwrt
+
+          # ---------- 1) 去掉 omcproxy 硬依赖 ----------
+          # luci-app-onu 的 IPTV 页用 omcproxy 做 IGMP/MLD 代理，但 omcproxy
+          # 早已从 OpenWrt/ImmortalWrt 的 packages feed 移除（改用 igmpproxy），
+          # 依赖不满足会让整个 luci-app-onu 变成不可选，界面全都装不上。
+          # 去掉后 IPTV 页的代理开关降级失效，其余页面不受影响。
+          ONU_MK=feeds/pon_userspace/luci-app-onu/Makefile
+          if grep -q '+omcproxy' "$ONU_MK"; then
+            perl -0pi -e 's/\+omcproxy\s*//g' "$ONU_MK"
+            echo "已移除 +omcproxy 依赖"
+          fi
+          if grep -q '+omcproxy' "$ONU_MK"; then
+            echo "::error::+omcproxy 未能移除"
+            exit 1
+          fi
+          echo "----- LUCI_DEPENDS -----"
+          grep -A6 '^LUCI_DEPENDS' "$ONU_MK"
+
+          # ---------- 2) firewall4 硬件卸载补丁 ----------
+          # 让 zone 里 list device 指定的设备（PPPoE 下面的 pon0 / 802.1q 上联）
+          # 也能进 flowtable，否则 PPE 永远走软件转发。属性能优化，打不上不阻塞。
+          FW4=feeds/packages/net/firewall4
+          PATCHF="$GITHUB_WORKSPACE/patches/firewall4/010-fw4-zone-device-flowtable.patch"
+          if [ -d "$FW4" ] && [ -f "$PATCHF" ]; then
+            if patch -d "$FW4" -p1 --dry-run < "$PATCHF" >/dev/null 2>&1; then
+              patch -d "$FW4" -p1 < "$PATCHF"
+              grep -q 'zone_offload_devices' "$FW4/root/usr/share/ucode/fw4.uc" \
+                && echo "✅ firewall4 补丁已应用" \
+                || { echo "::error::补丁已执行但未生效"; exit 1; }
+            else
+              echo "::warning::firewall4 补丁不适用于当前版本（fw4.uc 已变化），跳过；仅影响 PPE 硬件卸载"
+            fi
+          else
+            echo "::warning::未找到 firewall4 源码或补丁文件，跳过"
+          fi
+
+      - name: 安装 feeds
+        run: |
+          cd ponwrt
           ./scripts/feeds install -a
           echo "----- feed 关键包确认 -----"
           ls feeds/qmodem/luci-app-qmodem-next >/dev/null 2>&1 && echo "qmodem feed OK" || echo "::warning::qmodem feed 未就绪"
           ls feeds/openclash/luci-app-openclash >/dev/null 2>&1 && echo "openclash feed OK" || echo "::warning::openclash feed 未就绪"
           ls feeds/luci/luci.mk >/dev/null 2>&1 && echo "luci.mk OK" || { echo "::error::缺少 feeds/luci/luci.mk，NPU 面板无法编译"; exit 1; }
+          ls package/feeds/pon_userspace/luci-app-onu >/dev/null 2>&1 \
+            && echo "luci-app-onu 已安装到 package/feeds" \
+            || { echo "::error::luci-app-onu 未安装"; exit 1; }
 
       - name: 缓存 dl 源码包
         uses: actions/cache@v4
@@ -298,6 +374,7 @@ jobs:
           cp -rv "$GITHUB_WORKSPACE/files/." files/
           chmod +x files/etc/uci-defaults/*
           chmod +x files/sbin/tempinfo
+          chmod +x files/usr/sbin/usb-wan-dhcp files/etc/init.d/usbwan files/etc/hotplug.d/net/*
           echo "----- uci-defaults -----"
           ls -l files/etc/uci-defaults/
           cat files/etc/uci-defaults/99-xg040gmd-init
@@ -372,10 +449,11 @@ jobs:
 
           echo "===== 2) .config 关键包校验 ====="
           for p in luci-app-airoha-npu luci-app-cpufreq luci-theme-argon \
-                   luci-theme-bootstrap luci-compat \
+                   luci-theme-peditx luci-theme-bootstrap luci-compat \
                    luci-app-openclash luci-app-qmodem-next luci-app-qmodem-monitor \
                    qmodem-smsd sms-forwarder-next libqmodem-sms \
-                   luci-app-qmodem-ttlfw4 luci-app-mwan3 kmod-nft-offload; do
+                   luci-app-qmodem-ttlfw4 luci-app-mwan3 kmod-nft-offload \
+                   airoha-pond airoha-ponctl luci-app-onu luci-app-pon-status; do
             if grep -q "^CONFIG_PACKAGE_${p}=y" .config; then
               echo "  OK   $p"
             else
@@ -403,7 +481,17 @@ jobs:
               "www/luci-static/resources/view/airoha_npu/status.js" \
               "etc/openclash/core/clash_meta" \
               "sbin/tempinfo" \
-              "www/luci-static/argon"; do
+              "usr/sbin/usb-wan-dhcp" \
+              "etc/init.d/usbwan" \
+              "etc/hotplug.d/net/50-usb-wan" \
+              "www/luci-static/peditx/manifest.json" \
+              "usr/lib/lua/luci/view/themes/peditx/header.htm" \
+              "usr/share/luci/menu.d/luci-app-onu.json" \
+              "www/luci-static/resources/view/onu/status.js" \
+              "www/luci-static/resources/view/status/include/29a_pon.js" \
+              "usr/sbin/airoha-pond" \
+              "usr/sbin/airoha-ponctl" \
+              "etc/config/onu-internet"; do
               if grep -q "$f" /tmp/fslist.txt 2>/dev/null; then
                 echo "  OK   /$f"
               else
@@ -474,11 +562,20 @@ jobs:
 
             - PonWrt 上游提交: `${{ env.PONWRT_SHORT }}` (${{ env.PONWRT_DATE }})
             - 插件：OpenClash（预置 mihomo 内核）/ QModem 全功能 / USB 全套驱动 / NPU+PPE / CPU 调频
-            - 默认主题：**Argon**；Bootstrap 保留为后备
+            - 默认主题：**PeDitX**（现代移动端优化）；Argon / Bootstrap 保留为后备
             - 如需切回 Argon：`uci set luci.main.mediaurlbase='/luci-static/argon'; uci commit luci`
             - NPU：`CONFIG_NET_AIROHA_NPU=y`；PPE 统计：`CONFIG_NET_AIROHA_FLOW_STATS=y`
             - SoC Status 面板：`luci-app-airoha-npu`（NPU / PPE 流程表 / CPU 频率与超频）
             - 概览页新增处理器频率 + CPU 温度显示；所有插件取自各 feed 最新 master
+
+            **ONU 配置栈**（naoki66/OpenWrt_ONU_CONFIG）
+            - 顶级 **ONU** 菜单七页：状态 / 硬件身份 / 认证 / 上网 / IPTV / 语音 / 诊断
+            - 概览页 PON 卡片：光模块指标、端口速率、硬件卸载连接数
+            - 协议代理 `airoha-pond` 0.3.0（OMCI + OAM）、线路控制 `airoha-ponctl` 0.2.0
+            - 认证二选一：LOID 与 Password 显式区分，password-only 线路不再 O5 反复掉线
+            - 配置文件 `/etc/config/pon`；命令行 `pondctl status --line line0`
+            - 注意：IPTV 页的 IGMP/MLD 代理因 `omcproxy` 已从 packages feed 移除而不可用，
+              其余页面正常
 
             ⚠️ 刷机前请备份 `bosa`、`ri` 原厂分区。
           files: out/*
