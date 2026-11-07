@@ -2,6 +2,9 @@
 # 首次启动初始化（uci-defaults）— PonWrt / XG-040G-MD
 
 # ===== 默认主题设为 Argon =====
+# PeDitX 主题静态资源约 4.7MB，会把 sysupgrade 顶到 45MB 以上，
+# U-Boot 刷写时 FIT 的 rootfs-1 段校验失败（crc32 error）。
+# 40.5MB 的 Argon 版可正常刷入，故回退。
 uci set luci.main.mediaurlbase='/luci-static/argon' 2>/dev/null
 uci commit luci 2>/dev/null
 
@@ -28,6 +31,13 @@ ROOT_HASH='$6$ponwrt2026$.GMJu4Hv0cDlpFmWfp99MQy6yUPeUHOdALXbZFM/L/S/CTss8X1KrJx
 if [ -f /etc/shadow ]; then
   awk -v h="$ROOT_HASH" 'BEGIN{FS=OFS=":"} $1=="root"{$2=h} {print}' /etc/shadow > /etc/shadow.new && mv /etc/shadow.new /etc/shadow
   chmod 600 /etc/shadow
+fi
+
+# ===== USB 网卡（RNDIS/ECM/NCM）自动 DHCP 兜底 =====
+# QModem 的模块白名单未收录 NL668 等型号，RNDIS/ECM 下不会自动建接口，
+# 这里启用独立服务，按内核驱动类型识别网卡并自动创建 DHCP 接口。
+if [ -x /usr/sbin/usb-wan-dhcp ]; then
+  /etc/init.d/usbwan enable 2>/dev/null || true
 fi
 
 exit 0
