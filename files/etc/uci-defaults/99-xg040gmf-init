@@ -1,0 +1,33 @@
+#!/bin/sh
+# 首次启动初始化（uci-defaults）— PonWrt / Nokia XG-040G-MF (AN7583)
+
+# ===== 默认主题 Argon =====
+uci set luci.main.mediaurlbase='/luci-static/argon' 2>/dev/null
+uci commit luci 2>/dev/null
+
+# ===== 开启 nftables 硬件加速 flowtable offload =====
+uci set firewall.@defaults[0].flow_offloading='1' 2>/dev/null
+uci set firewall.@defaults[0].flow_offloading_hw='1' 2>/dev/null
+uci commit firewall 2>/dev/null
+
+# ===== 挂载 debugfs（PPE 流程表 / NPU 时钟依赖）=====
+if ! grep -q "debugfs" /etc/fstab 2>/dev/null; then
+  echo "debugfs   /sys/kernel/debug   debugfs   noauto,0 0" >> /etc/fstab
+fi
+mount -t debugfs none /sys/kernel/debug 2>/dev/null || true
+
+# ===== 允许 dmesg 读取（SoC Status 面板读取 NPU 固件版本）=====
+if ! grep -q "^kernel.dmesg_restrict" /etc/sysctl.conf 2>/dev/null; then
+  echo "kernel.dmesg_restrict=0" >> /etc/sysctl.conf
+fi
+sysctl -w kernel.dmesg_restrict=0 >/dev/null 2>&1 || true
+
+# ===== 预设 root 密码（登录名 root / 密码 root）=====
+# 直接写入 sha512-crypt 哈希，避免 passwd 在非交互环境下失败
+ROOT_HASH='$6$ponwrt2026$.GMJu4Hv0cDlpFmWfp99MQy6yUPeUHOdALXbZFM/L/S/CTss8X1KrJxB3siEBZrO3wd7Rm7vrfTFdDYQHievA1'
+if [ -f /etc/shadow ]; then
+  awk -v h="$ROOT_HASH" 'BEGIN{FS=OFS=":"} $1=="root"{$2=h} {print}' /etc/shadow > /etc/shadow.new && mv /etc/shadow.new /etc/shadow
+  chmod 600 /etc/shadow
+fi
+
+exit 0
