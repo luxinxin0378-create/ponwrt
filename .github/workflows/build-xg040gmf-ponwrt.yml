@@ -380,7 +380,8 @@ jobs:
                    luci-theme-bootstrap luci-compat \
                    luci-app-openclash luci-app-qmodem-next luci-app-qmodem-monitor \
                    qmodem-smsd sms-forwarder-next libqmodem-sms \
-                   luci-app-qmodem-ttlfw4 luci-app-mwan3 kmod-nft-offload; do
+                   luci-app-qmodem-ttlfw4 luci-app-mwan3 kmod-nft-offload \
+                   kmod-phy-airoha-en8811h airoha-en8811h-firmware kmod-airoha-en7572; do
             if grep -q "^CONFIG_PACKAGE_${p}=y" .config; then
               echo "  OK   $p"
             else
@@ -408,6 +409,7 @@ jobs:
               "www/luci-static/resources/view/airoha_npu/status.js" \
               "etc/openclash/core/clash_meta" \
               "sbin/tempinfo" \
+              "phy/airoha-en8811h.ko" \
               "www/luci-static/argon/manifest.json"; do
               if grep -q "$f" /tmp/fslist.txt 2>/dev/null; then
                 echo "  OK   /$f"
