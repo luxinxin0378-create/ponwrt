@@ -307,6 +307,7 @@ jobs:
           cp -rv "$GITHUB_WORKSPACE/files/." files/
           chmod +x files/etc/uci-defaults/*
           chmod +x files/sbin/tempinfo
+          chmod +x files/usr/sbin/usb-wan-dhcp files/etc/init.d/usbwan files/etc/hotplug.d/net/*
           echo "----- uci-defaults -----"
           ls -l files/etc/uci-defaults/
           cat files/etc/uci-defaults/99-xg040gmd-init
@@ -412,6 +413,9 @@ jobs:
               "www/luci-static/resources/view/airoha_npu/status.js" \
               "etc/openclash/core/clash_meta" \
               "sbin/tempinfo" \
+              "usr/sbin/usb-wan-dhcp" \
+              "etc/init.d/usbwan" \
+              "etc/hotplug.d/net/50-usb-wan" \
               "www/luci-static/peditx/manifest.json" \
               "usr/lib/lua/luci/view/themes/peditx/header.htm"; do
               if grep -q "$f" /tmp/fslist.txt 2>/dev/null; then

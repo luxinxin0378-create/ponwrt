@@ -1,0 +1,15 @@
+#!/bin/sh
+# USB 网卡热插拔：RNDIS / ECM / NCM 模块接入时自动建立 DHCP 接口
+# 由 /usr/sbin/usb-wan-dhcp 完成实际逻辑，这里只做事件过滤。
+
+[ "$ACTION" = "add" ] || exit 0
+[ -n "$INTERFACE" ] || exit 0
+
+case "$INTERFACE" in
+    lo|br-*|eth0) exit 0 ;;
+esac
+
+[ -x /usr/sbin/usb-wan-dhcp ] || exit 0
+
+# 后台执行，避免阻塞 hotplug 队列
+( sleep 3; /usr/sbin/usb-wan-dhcp "$INTERFACE" ) >/dev/null 2>&1 &
