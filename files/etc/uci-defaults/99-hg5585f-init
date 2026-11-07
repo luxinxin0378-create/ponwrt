@@ -1,8 +1,8 @@
 #!/bin/sh
 # 首次启动初始化（uci-defaults）— PonWrt / HG5585F (CT)
 
-# ===== 默认主题设为 PeDitX（Argon 保留为后备）=====
-uci set luci.main.mediaurlbase='/luci-static/peditx' 2>/dev/null
+# ===== 默认主题设为 Argon =====
+uci set luci.main.mediaurlbase='/luci-static/argon' 2>/dev/null
 uci commit luci 2>/dev/null
 
 # ===== 开启 nftables 硬件加速 flowtable offload =====
