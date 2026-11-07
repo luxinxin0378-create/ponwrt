@@ -408,7 +408,7 @@ jobs:
               "www/luci-static/resources/view/airoha_npu/status.js" \
               "etc/openclash/core/clash_meta" \
               "sbin/tempinfo" \
-              "www/luci-static/argon/manifest.json" \; do
+              "www/luci-static/argon/manifest.json"; do
               if grep -q "$f" /tmp/fslist.txt 2>/dev/null; then
                 echo "  OK   /$f"
               else

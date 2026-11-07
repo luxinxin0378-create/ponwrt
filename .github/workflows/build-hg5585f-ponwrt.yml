@@ -3,7 +3,7 @@ name: Build PonWrt HG5585F (CT 电信版)
 # 源码：PonWrt（pbs05/ponwrt，ImmortalWrt 系，内核 6.18）— 烽火 HG5585F 电信版
 # 插件清单与已通过验证的 LEDE 固件完全一致：
 #   OpenClash（预置 mihomo 内核）/ QModem 全功能 / USB 全套驱动 /
-#   NPU+PPE（含 SoC Status 面板）/ CPU 调频 / Argon 主题
+#   NPU+PPE（含 SoC Status 面板）/ CPU 调频 / PeDitX 主题（Argon 后备）
 #
 # 触发：
 #   1) 手动（可临时追加插件）
@@ -90,7 +90,7 @@ jobs:
           echo "PONWRT_DATE=$(git log -1 --format=%cd --date=format:'%Y-%m-%d %H:%M')" >> "$GITHUB_ENV"
           echo "上游提交: $(git rev-parse --short HEAD) $(git log -1 --format=%s)"
 
-      - name: 注入自定义包（NPU 状态面板）
+      - name: 注入自定义包（NPU 状态面板 + PeDitX 主题）
         run: |
           # PonWrt 走 ImmortalWrt 的 luci feed，没有 luci-app-airoha-npu，
           # 这里把移植版包放到 package/ 下参与编译（Makefile 已指向 feeds/luci/luci.mk）
@@ -99,6 +99,15 @@ jobs:
           echo "----- 包文件 -----"
           find ponwrt/package/luci-app-airoha-npu -type f | sort
 
+          # PeDitX 主题（peditx/luci-theme-peditx）：独立 Makefile（package.mk），
+          # 放进 package/ 即可编译；截图目录约 15MB 与产物无关，删掉省磁盘。
+          git clone --depth 1 https://github.com/peditx/luci-theme-peditx.git \
+            ponwrt/package/luci-theme-peditx
+          rm -rf ponwrt/package/luci-theme-peditx/screenshots
+          echo "----- PeDitX 主题 -----"
+          ls ponwrt/package/luci-theme-peditx
+          test -f ponwrt/package/luci-theme-peditx/Makefile \
+            || { echo "::error::PeDitX 主题拉取失败"; exit 1; }
 
       - name: 挂载第三方 feeds
         run: |
@@ -298,6 +307,13 @@ jobs:
           cp -rv "$GITHUB_WORKSPACE/files/." files/
           chmod +x files/etc/uci-defaults/*
           chmod +x files/sbin/tempinfo
+          # USB 网卡兜底脚本已回退，文件不存在时不能无条件 chmod
+          for f in files/usr/sbin/usb-wan-dhcp files/etc/init.d/usbwan; do
+            if [ -f "$f" ]; then chmod +x "$f"; fi
+          done
+          if [ -d files/etc/hotplug.d/net ]; then
+            find files/etc/hotplug.d/net -type f -exec chmod +x {} +
+          fi
           echo "----- uci-defaults -----"
           ls -l files/etc/uci-defaults/
           cat files/etc/uci-defaults/99-hg5585f-init
@@ -372,7 +388,7 @@ jobs:
 
           echo "===== 2) .config 关键包校验 ====="
           for p in luci-app-airoha-npu luci-app-cpufreq luci-theme-argon \
-                   luci-theme-bootstrap luci-compat \
+                   luci-theme-peditx luci-theme-bootstrap luci-compat \
                    luci-app-openclash luci-app-qmodem-next luci-app-qmodem-monitor \
                    qmodem-smsd sms-forwarder-next libqmodem-sms \
                    luci-app-qmodem-ttlfw4 luci-app-mwan3 kmod-nft-offload; do
@@ -403,7 +419,11 @@ jobs:
               "www/luci-static/resources/view/airoha_npu/status.js" \
               "etc/openclash/core/clash_meta" \
               "sbin/tempinfo" \
-              "www/luci-static/argon"; do
+              "usr/sbin/usb-wan-dhcp" \
+              "etc/init.d/usbwan" \
+              "etc/hotplug.d/net/50-usb-wan" \
+              "www/luci-static/peditx/manifest.json" \
+              "usr/lib/lua/luci/view/themes/peditx/header.htm"; do
               if grep -q "$f" /tmp/fslist.txt 2>/dev/null; then
                 echo "  OK   /$f"
               else
@@ -474,7 +494,7 @@ jobs:
 
             - PonWrt 上游提交: `${{ env.PONWRT_SHORT }}` (${{ env.PONWRT_DATE }})
             - 插件：OpenClash（预置 mihomo 内核）/ QModem 全功能 / USB 全套驱动 / NPU+PPE / CPU 调频
-            - 默认主题：**Argon**；Bootstrap 保留为后备
+            - 默认主题：**PeDitX**（现代移动端优化）；Argon / Bootstrap 保留为后备
             - 如需切回 Argon：`uci set luci.main.mediaurlbase='/luci-static/argon'; uci commit luci`
             - NPU：`CONFIG_NET_AIROHA_NPU=y`；PPE 统计：`CONFIG_NET_AIROHA_FLOW_STATS=y`
             - SoC Status 面板：`luci-app-airoha-npu`（NPU / PPE 流程表 / CPU 频率与超频）
